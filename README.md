@@ -1,63 +1,55 @@
 # Job Radar — Petra
 
-Scraper de vagas remotas para CS Ops. Roda diariamente via GitHub Actions e manda vagas relevantes no Telegram.
+Busca diária de vagas CS Ops remotas via Google Jobs (SerpAPI) + RSS de backup. Manda no Telegram só o que é relevante.
 
-## Fontes monitoradas
-- Remote OK (API)
-- Himalayas (API)
-- We Work Remotely (RSS)
-- Working Nomads (RSS)
+## Setup
 
-## Como configurar
+### 1. Criar repo no GitHub
+Repo privado: `job-radar-petra`. Sobe todos os arquivos desta pasta.
 
-### 1. Criar repositório no GitHub
-- Cria um repo novo, pode ser privado: `job-radar-petra`
-- Sobe todos os arquivos desta pasta
-
-### 2. Adicionar secrets no GitHub
-Vai em **Settings → Secrets and variables → Actions → New repository secret** e adiciona:
+### 2. Adicionar 3 secrets
+Settings → Secrets and variables → Actions → New repository secret:
 
 | Secret | Valor |
 |--------|-------|
-| `TELEGRAM_TOKEN` | Token do bot (BotFather) |
+| `TELEGRAM_TOKEN` | Token do BotFather |
 | `TELEGRAM_CHAT_ID` | Teu chat ID numérico |
+| `SERPAPI_KEY` | Tua API key da SerpAPI |
 
-### 3. Ativar o workflow
-- Vai em **Actions** no GitHub
-- Clica em **Job Radar**
-- Clica em **Enable workflow** se estiver desativado
-- Para testar agora: clica em **Run workflow**
+### 3. Testar agora
+Actions → Job Radar → Run workflow
 
-## Como funciona o scoring
+Roda automaticamente todo dia às 9h BRT.
 
-Cada vaga recebe pontos:
-- +3 por keyword no **título** (cs operations, cx ops, support operations, etc.)
-- +1 por keyword na **descrição** (zendesk, hubspot, churn, onboarding, etc.)
-- Score < 2 = descartada silenciosamente
-- Score -1 = excluída (US only, manager, director, VP, exige cidadania)
-
-## Mensagem no Telegram
+## Formato da mensagem
 
 ```
 🎯 CS Operations Specialist
-🏢 Acme Corp
-📡 Himalayas
+──────────────────────
+🏢 Empresa: Acme Corp
+📡 Portal: Google Jobs · via LinkedIn
+──────────────────────
+📋 Resumo curto da vaga...
+──────────────────────
 💰 $2,500–$3,500/month
 🔗 Ver vaga
-Score: 7
+⭐ Score: 9
 ```
 
-## Ajustar keywords
+## Ajustar filtros
 
-Edita o arquivo `scraper.py`:
-- `TITLE_KEYWORDS` — palavras que pontuam no título
-- `DESC_KEYWORDS` — palavras que pontuam na descrição
-- `EXCLUDE_TITLE` — eliminam a vaga pelo título
-- `EXCLUDE_DESC` — eliminam a vaga pela descrição (US only, cidadania, etc.)
+Edita `scraper.py`:
 
-## Rodar localmente (teste)
+- `SERPAPI_QUERIES` — as buscas no Google Jobs (3 = 90 créditos/mês, dentro do free tier de 250)
+- `TITLE_KEYWORDS` — +3 pontos por match no título
+- `DESC_KEYWORDS` — +1 ponto por match na descrição  
+- `EXCLUDE_TITLE` — elimina a vaga pelo título (manager, director, etc.)
+- `EXCLUDE_DESC` — elimina pelo texto (US only, cidadania, vagas BR, etc.)
+- Score mínimo para envio: linha `if score < 4` — sobe para filtrar mais, desce para ver mais
+
+## Testar localmente
 
 ```bash
 pip install -r requirements.txt
-TELEGRAM_TOKEN="seu_token" TELEGRAM_CHAT_ID="seu_chat_id" python scraper.py
+TELEGRAM_TOKEN="..." TELEGRAM_CHAT_ID="..." SERPAPI_KEY="..." python scraper.py
 ```
