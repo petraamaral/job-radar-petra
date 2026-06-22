@@ -30,6 +30,7 @@ EXCLUDE_TITLE = [
     "manager", "director", "vp ", "vice president", "head of",
     "senior manager", "us only", "united states only",
     "must be us", "must reside in us", "must be based in us",
+    "junior", "jr.", "marketing specialist", "analista",
 ]
 
 # Palavras que eliminam a vaga (descrição/requisitos)
@@ -39,7 +40,9 @@ EXCLUDE_DESC = [
     "must be based in the united states", "only considering us",
     "eligible to work in the us", "us work authorization required",
     "us-based only", "united states only", "north america only",
-    "canada or us only", "must be in the us",
+    "canada or us only", "must be in the us", "r$", "reais", "clt", "pj brasil", "são paulo", 
+    "rio de janeiro", "porto alegre", "belo horizonte", "pessoa negra", "afirmativa",
+    "vaga afirmativa", "brasil only",
 ]
 
 
@@ -262,7 +265,7 @@ def main():
         if score < 0:
             continue  # excluded
 
-        if score < 2:
+        if score < 4:
             continue  # not relevant enough
 
         msg = format_message(job, score)
