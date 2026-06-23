@@ -7,66 +7,46 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-SERPAPI_KEY = os.environ.get("SERPAPI_KEY", "")
-SEEN_FILE = Path("seen_jobs.json")
+SERPAPI_KEY     = os.environ.get("SERPAPI_KEY", "")
+GROQ_API_KEY    = os.environ.get("GROQ_API_KEY", "")
+SEEN_FILE       = Path("seen_jobs.json")
 
+# ── Candidate profile sent to Groq ────────────────────────────────────────────
+CANDIDATE_PROFILE = """
+Name: Petra Iglezias Amaral
+Role target: CS Operations Specialist / CX Operations / Support Operations
+Experience: 4+ years
+Key skills: IVR design and deployment (CloudTalk), skills-based routing, Zendesk administration,
+  knowledge base architecture, HubSpot Service Hub (certified), Power BI (certified), Metabase,
+  Python scripting for automation and web scraping, SQL for data querying, multilingual onboarding
+  (Portuguese/English/Spanish), NPS/CSAT frameworks, ARR retention, churn analysis,
+  familiar with Gainsight and ChurnZero health score frameworks, GDPR awareness.
+Track record: 30+ concurrent accounts managed, zero churn, 9.4 CSAT, IVR built from scratch,
+  data coverage scaled 10% to 100% via Python automation (tool still in production),
+  fraud prevention solo coverage at international fintech with zero chargebacks.
+Work authorization: Brazilian national. NOT eligible for US work authorization.
+  Can work fully remotely for any company worldwide EXCEPT US-only roles.
+  Open to Americas or EMEA timezones.
+Salary expectation: USD $2,500–$4,000/month remote.
+"""
+
+# SerpAPI queries — 3/day = 90 credits/month (free tier: 250)
 SERPAPI_QUERIES = [
     "CX Operations Specialist remote",
     "Support Operations Specialist remote",
     "Customer Success Operations remote",
 ]
 
-TITLE_KEYWORDS = [
-    "cs operations", "cs ops", "cx operations", "cx ops",
-    "customer success operations", "support operations", "support ops",
-    "revenue operations", "revops", "customer operations",
-    "zendesk admin", "crm operations", "customer experience operations",
-]
-
-DESC_KEYWORDS = [
-    "zendesk", "hubspot", "ivr", "csat", "churn", "onboarding",
-    "knowledge base", "cloudtalk", "intercom", "freshdesk",
-    "customer success", "cs ops", "support ops", "health score",
-    "gainsight", "churnzero", "playbook",
-]
-
-EXCLUDE_TITLE = [
-    "manager", "director", r"\bvp\b", "vice president", "head of",
-    "senior manager", r"\bjunior\b", r"\bjr\b", "analista",
-    "marketing specialist",
-]
-
-# Padrões regex precisos para US-only — evita falsos positivos com "West Coast US"
-US_ONLY_PATTERNS = [
-    r"\bmust be (authorized|authorised) to work in the (us|united states)\b",
-    r"\bwork authorization (required )?(in|for) the (us|united states)\b",
-    r"\bus (work )?authorization required\b",
-    r"\bmust (reside|be (located|based)) in the (us|united states)\b",
-    r"\bthis (position|role) (is |can be )?(only |exclusively )?based in the (us|united states)\b",
-    r"\bonly (considering|open to|accepting) (candidates (in|from) )?(the )?(us|united states)\b",
-    r"\b(us|united states)[- ]only\b",
-    r"\beligible to work in the (us|united states)\b",
-    r"\bmust (have|hold) (a )?(us|united states) (citizenship|work permit|visa)\b",
-    r"\b(green card|us citizen(ship)?)\b",
-    r"\bnorth america only\b",
-    r"\b(canada or us|us or canada) only\b",
-    r"\bus residents only\b",
-    r"\bopen only to (us|united states) residents\b",
-    r"\bauthorized to work in (the )?us\b",
-]
-
-BR_PATTERNS = [
-    r"\br\$\s*\d",
-    r"\bclt\b",
-    r"\bvaga afirmativa\b",
-    r"\bpessoas negras\b",
-    r"\bsão paulo\b",
-    r"\bbelo horizonte\b",
+# Pre-filter: obvious title exclusions before calling Groq (saves tokens)
+EXCLUDE_TITLE_QUICK = [
+    r"\bdirector\b", r"\bvp\b", r"\bvice president\b", r"\bhead of\b",
+    r"\bsenior manager\b", r"\bjunior\b", r"\bjr\b",
 ]
 
 
+# ── Storage ───────────────────────────────────────────────────────────────────
 def load_seen():
     if SEEN_FILE.exists():
         return set(json.loads(SEEN_FILE.read_text()))
@@ -82,45 +62,14 @@ def make_job_id(job):
 def strip_html(text):
     return re.sub(r"<[^>]+>", " ", text or "")
 
-def is_excluded(title, description):
+def quick_exclude(title):
     t = title.lower()
-    d = (description or "").lower()
+    for pattern in EXCLUDE_TITLE_QUICK:
+        if re.search(pattern, t):
+            return True
+    return False
 
-    # Título — alguns como regex, outros como substring simples
-    for kw in EXCLUDE_TITLE:
-        if re.search(kw, t):
-            return True, f"title:{kw}"
-
-    # US-only — regex preciso
-    for pattern in US_ONLY_PATTERNS:
-        if re.search(pattern, d, re.IGNORECASE):
-            return True, f"us_only:{pattern[:40]}"
-
-    # Vagas BR
-    for pattern in BR_PATTERNS:
-        if re.search(pattern, d, re.IGNORECASE):
-            return True, f"br:{pattern}"
-
-    return False, ""
-
-def score_job(title, description):
-    t = title.lower()
-    d = (description or "").lower()
-
-    excluded, reason = is_excluded(title, description)
-    if excluded:
-        return -1
-
-    score = 0
-    for kw in TITLE_KEYWORDS:
-        if kw in t:
-            score += 3
-    for kw in DESC_KEYWORDS:
-        if kw in d:
-            score += 1
-    return score
-
-def short_description(text, max_chars=180):
+def short_description(text, max_chars=200):
     text = strip_html(text)
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) <= max_chars:
@@ -139,7 +88,85 @@ def extract_apply_link(item):
     return ""
 
 
-# ── SerpAPI ───────────────────────────────────────────────────────────────────
+# ── Groq analysis ─────────────────────────────────────────────────────────────
+def analyze_with_groq(job):
+    """
+    Returns dict:
+      remote_type: "global" | "us_only" | "hybrid_us" | "unclear"
+      fit_score: 0–100
+      fit_reason: one sentence
+      red_flags: one sentence or empty string
+    """
+    if not GROQ_API_KEY:
+        # Fallback: pass everything through with neutral score
+        return {"remote_type": "unclear", "fit_score": 50,
+                "fit_reason": "Groq not configured.", "red_flags": ""}
+
+    desc_truncated = strip_html(job.get("description", ""))[:1500]
+
+    prompt = f"""You are a job analyst. Analyze this job posting for a specific candidate.
+
+CANDIDATE PROFILE:
+{CANDIDATE_PROFILE}
+
+JOB POSTING:
+Title: {job.get('title', '')}
+Company: {job.get('company', '')}
+Description: {desc_truncated}
+
+Respond ONLY with a JSON object, no extra text:
+{{
+  "remote_type": "<global|us_only|hybrid_us|unclear>",
+  "fit_score": <integer 0-100>,
+  "fit_reason": "<one sentence max 120 chars explaining the main fit or mismatch>",
+  "red_flags": "<one sentence max 120 chars about concerns, or empty string if none>"
+}}
+
+remote_type rules:
+- global: open to candidates worldwide or explicitly says remote worldwide/international
+- us_only: requires US residency, US work authorization, or US citizenship
+- hybrid_us: remote but requires occasional on-site in the US
+- unclear: location requirements not stated
+
+fit_score rules:
+- 80-100: strong match, skills align directly with requirements
+- 60-79: good match, most skills align with minor gaps
+- 40-59: partial match, some relevant skills but notable gaps
+- 0-39: poor match, role is outside candidate's profile"""
+
+    try:
+        r = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "llama-3.1-8b-instant",
+                "messages": [{"role": "user", "content": prompt}],
+                "response_format": {"type": "json_object"},
+                "max_tokens": 200,
+                "temperature": 0.1,
+            },
+            timeout=15,
+        )
+        r.raise_for_status()
+        content = r.json()["choices"][0]["message"]["content"]
+        result = json.loads(content)
+        # Validate required fields
+        return {
+            "remote_type": result.get("remote_type", "unclear"),
+            "fit_score":   int(result.get("fit_score", 50)),
+            "fit_reason":  result.get("fit_reason", ""),
+            "red_flags":   result.get("red_flags", ""),
+        }
+    except Exception as e:
+        print(f"groq error: {e}")
+        return {"remote_type": "unclear", "fit_score": 50,
+                "fit_reason": "Analysis unavailable.", "red_flags": ""}
+
+
+# ── Sources ───────────────────────────────────────────────────────────────────
 def fetch_serpapi(query):
     jobs = []
     if not SERPAPI_KEY:
@@ -150,12 +177,11 @@ def fetch_serpapi(query):
             "engine": "google_jobs",
             "q": query,
             "hl": "en",
-            "chips": "date_posted:month",  # só vagas do último mês
+            "chips": "date_posted:month",
             "api_key": SERPAPI_KEY,
         }
         r = requests.get("https://serpapi.com/search", params=params, timeout=20)
         data = r.json()
-
         for item in data.get("jobs_results", []):
             salary = ""
             for v in item.get("detected_extensions", {}).values():
@@ -168,14 +194,13 @@ def fetch_serpapi(query):
                         if any(c in hi for c in ["$", "€", "£", "/month", "/year", "/hr"]):
                             salary = hi
                             break
-
             jobs.append({
-                "title": item.get("title", ""),
-                "company": item.get("company_name", ""),
+                "title":       item.get("title", ""),
+                "company":     item.get("company_name", ""),
                 "description": item.get("description", ""),
-                "url": extract_apply_link(item),
-                "salary": salary,
-                "source": f"Google Jobs · via {item.get('via', 'N/A')}",
+                "url":         extract_apply_link(item),
+                "salary":      salary,
+                "source":      f"Google Jobs · via {item.get('via', 'N/A')}",
             })
         time.sleep(1)
     except Exception as e:
@@ -183,7 +208,6 @@ def fetch_serpapi(query):
     return jobs
 
 
-# ── Remote OK ─────────────────────────────────────────────────────────────────
 def fetch_remoteok():
     jobs = []
     try:
@@ -203,19 +227,18 @@ def fetch_remoteok():
             elif s_min:
                 salary = f"${int(s_min):,}/year"
             jobs.append({
-                "title": item.get("position", ""),
-                "company": item.get("company", ""),
+                "title":       item.get("position", ""),
+                "company":     item.get("company", ""),
                 "description": item.get("description", ""),
-                "url": item.get("url", ""),
-                "salary": salary,
-                "source": "Remote OK",
+                "url":         item.get("url", ""),
+                "salary":      salary,
+                "source":      "Remote OK",
             })
     except Exception as e:
         print(f"remoteok error: {e}")
     return jobs
 
 
-# ── We Work Remotely ──────────────────────────────────────────────────────────
 def fetch_weworkremotely():
     import xml.etree.ElementTree as ET
     jobs = []
@@ -228,16 +251,16 @@ def fetch_weworkremotely():
         root = ET.fromstring(r.content)
         for item in root.findall(".//item"):
             title_raw = item.findtext("title") or ""
-            company = title_raw.split(" at ")[-1].strip() if " at " in title_raw else ""
-            title = title_raw.split(" at ")[0].strip() if " at " in title_raw else title_raw
-            desc = strip_html(item.findtext("description") or "")
+            company   = title_raw.split(" at ")[-1].strip() if " at " in title_raw else ""
+            title     = title_raw.split(" at ")[0].strip()  if " at " in title_raw else title_raw
+            desc      = strip_html(item.findtext("description") or "")
             jobs.append({
-                "title": title,
-                "company": company,
+                "title":       title,
+                "company":     company,
                 "description": desc,
-                "url": item.findtext("link") or "",
-                "salary": "",
-                "source": "We Work Remotely",
+                "url":         item.findtext("link") or "",
+                "salary":      "",
+                "source":      "We Work Remotely",
             })
     except Exception as e:
         print(f"weworkremotely error: {e}")
@@ -250,9 +273,9 @@ def send_telegram(text):
         r = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": text,
-                "parse_mode": "HTML",
+                "chat_id":                  TELEGRAM_CHAT_ID,
+                "text":                     text,
+                "parse_mode":               "HTML",
                 "disable_web_page_preview": True,
             },
             timeout=10,
@@ -261,12 +284,22 @@ def send_telegram(text):
     except Exception as e:
         print(f"telegram error: {e}")
 
-def format_message(job, score):
-    salary_line = f"💰 <b>{job['salary']}</b>" if job.get("salary") else "💰 Não informado"
-    desc = short_description(job.get("description", ""))
-    desc_line = f"📋 {desc}\n" if desc else ""
-    link = job.get("url") or "N/A"
-    link_tag = f'<a href="{link}">Ver vaga</a>' if link != "N/A" else "Link não disponível"
+def fit_emoji(score):
+    if score >= 80: return "🟢"
+    if score >= 60: return "🟡"
+    if score >= 40: return "🟠"
+    return "🔴"
+
+def format_message(job, analysis):
+    score    = analysis["fit_score"]
+    reason   = analysis["fit_reason"]
+    flags    = analysis["red_flags"]
+    salary   = f"💰 <b>{job['salary']}</b>" if job.get("salary") else "💰 Não informado"
+    desc     = short_description(job.get("description", ""))
+    desc_ln  = f"📋 {desc}\n" if desc else ""
+    flags_ln = f"⚠️ {flags}\n" if flags else ""
+    link     = job.get("url") or ""
+    link_tag = f'<a href="{link}">Ver vaga</a>' if link else "Link não disponível"
 
     return (
         f"🎯 <b>{job['title']}</b>\n"
@@ -274,11 +307,13 @@ def format_message(job, score):
         f"🏢 Empresa: {job.get('company') or 'N/A'}\n"
         f"📡 Portal: {job['source']}\n"
         f"──────────────────────\n"
-        f"{desc_line}"
+        f"{desc_ln}"
         f"──────────────────────\n"
-        f"{salary_line}\n"
+        f"{salary}\n"
         f"🔗 {link_tag}\n"
-        f"⭐ Score: {score}"
+        f"──────────────────────\n"
+        f"{fit_emoji(score)} Fit: <b>{score}%</b> — {reason}\n"
+        f"{flags_ln}"
     )
 
 
@@ -302,11 +337,22 @@ def main():
             continue
         seen.add(jid)
 
-        score = score_job(job["title"], job.get("description", ""))
-        if score < 4:
+        # Quick title filter before calling Groq
+        if quick_exclude(job["title"]):
+            print(f"  Excluded (title): {job['title']}")
             continue
 
-        send_telegram(format_message(job, score))
+        # Groq analysis
+        analysis = analyze_with_groq(job)
+        print(f"  [{analysis['remote_type']} | {analysis['fit_score']}%] {job['title']}")
+
+        # Discard US-only and low-fit
+        if analysis["remote_type"] in ("us_only", "hybrid_us"):
+            continue
+        if analysis["fit_score"] < 45:
+            continue
+
+        send_telegram(format_message(job, analysis))
         sent_count += 1
         time.sleep(0.5)
 
