@@ -33,39 +33,37 @@ DESC_KEYWORDS = [
 ]
 
 EXCLUDE_TITLE = [
-    "manager", "director", "vp ", "vice president", "head of",
-    "senior manager", "junior", "jr.", "analista", "marketing specialist",
+    "manager", "director", r"\bvp\b", "vice president", "head of",
+    "senior manager", r"\bjunior\b", r"\bjr\b", "analista",
+    "marketing specialist",
 ]
 
-EXCLUDE_DESC = [
-    # Cidadania / autorização
-    "us citizen", "us citizenship", "green card",
-    "must be authorized to work in the us",
-    "authorized to work in the united states",
-    "work authorization in the us",
-    "us work authorization",
-    # Localização US restritiva
-    "must be located in the united states",
-    "must reside in the us",
-    "must be based in the us",
-    "must be based in the united states",
-    "based anywhere in the us",
-    "based in the us",
-    "position is based in the us",
-    "this position can be based anywhere in the us",
-    "only considering us",
-    "us-based only",
-    "united states only",
-    "located in the united states",
-    "reside in the united states",
-    "north america only",
-    "canada or us only",
-    "must be in the us",
-    "open to us residents",
-    "us residents only",
-    # Vagas BR
-    "r$", "reais", " clt ", "são paulo", "rio de janeiro",
-    "belo horizonte", "pessoa negra", "afirmativa",
+# Padrões regex precisos para US-only — evita falsos positivos com "West Coast US"
+US_ONLY_PATTERNS = [
+    r"\bmust be (authorized|authorised) to work in the (us|united states)\b",
+    r"\bwork authorization (required )?(in|for) the (us|united states)\b",
+    r"\bus (work )?authorization required\b",
+    r"\bmust (reside|be (located|based)) in the (us|united states)\b",
+    r"\bthis (position|role) (is |can be )?(only |exclusively )?based in the (us|united states)\b",
+    r"\bonly (considering|open to|accepting) (candidates (in|from) )?(the )?(us|united states)\b",
+    r"\b(us|united states)[- ]only\b",
+    r"\beligible to work in the (us|united states)\b",
+    r"\bmust (have|hold) (a )?(us|united states) (citizenship|work permit|visa)\b",
+    r"\b(green card|us citizen(ship)?)\b",
+    r"\bnorth america only\b",
+    r"\b(canada or us|us or canada) only\b",
+    r"\bus residents only\b",
+    r"\bopen only to (us|united states) residents\b",
+    r"\bauthorized to work in (the )?us\b",
+]
+
+BR_PATTERNS = [
+    r"\br\$\s*\d",
+    r"\bclt\b",
+    r"\bvaga afirmativa\b",
+    r"\bpessoas negras\b",
+    r"\bsão paulo\b",
+    r"\bbelo horizonte\b",
 ]
 
 
@@ -77,23 +75,41 @@ def load_seen():
 def save_seen(seen):
     SEEN_FILE.write_text(json.dumps(list(seen)))
 
-def job_id(job):
+def make_job_id(job):
     key = f"{job.get('title','')}{job.get('company','')}{job.get('url','')}"
     return hashlib.md5(key.encode()).hexdigest()
 
 def strip_html(text):
     return re.sub(r"<[^>]+>", " ", text or "")
 
+def is_excluded(title, description):
+    t = title.lower()
+    d = (description or "").lower()
+
+    # Título — alguns como regex, outros como substring simples
+    for kw in EXCLUDE_TITLE:
+        if re.search(kw, t):
+            return True, f"title:{kw}"
+
+    # US-only — regex preciso
+    for pattern in US_ONLY_PATTERNS:
+        if re.search(pattern, d, re.IGNORECASE):
+            return True, f"us_only:{pattern[:40]}"
+
+    # Vagas BR
+    for pattern in BR_PATTERNS:
+        if re.search(pattern, d, re.IGNORECASE):
+            return True, f"br:{pattern}"
+
+    return False, ""
+
 def score_job(title, description):
     t = title.lower()
     d = (description or "").lower()
 
-    for kw in EXCLUDE_TITLE:
-        if kw in t:
-            return -1
-    for kw in EXCLUDE_DESC:
-        if kw in d:
-            return -1
+    excluded, reason = is_excluded(title, description)
+    if excluded:
+        return -1
 
     score = 0
     for kw in TITLE_KEYWORDS:
@@ -112,20 +128,14 @@ def short_description(text, max_chars=180):
     return text[:max_chars].rsplit(" ", 1)[0] + "..."
 
 def extract_apply_link(item):
-    # Tenta pegar o link direto da vaga nos apply_options
     for opt in item.get("apply_options", []):
         link = opt.get("link", "")
         if link and "google.com" not in link:
             return link
-    # Fallback: related_links
     for rl in item.get("related_links", []):
         link = rl.get("link", "")
         if link and "google.com" not in link:
             return link
-    # Último recurso: link do Google Jobs com job_id se disponível
-    job_id_val = item.get("job_id", "")
-    if job_id_val:
-        return f"https://www.google.com/search?q={job_id_val}&udm=8"
     return ""
 
 
@@ -140,16 +150,15 @@ def fetch_serpapi(query):
             "engine": "google_jobs",
             "q": query,
             "hl": "en",
+            "chips": "date_posted:month",  # só vagas do último mês
             "api_key": SERPAPI_KEY,
         }
         r = requests.get("https://serpapi.com/search", params=params, timeout=20)
         data = r.json()
 
         for item in data.get("jobs_results", []):
-            # Extrai salário
             salary = ""
-            det = item.get("detected_extensions", {})
-            for v in det.values():
+            for v in item.get("detected_extensions", {}).values():
                 if isinstance(v, str) and any(c in v for c in ["$", "€", "£", "USD", "EUR"]):
                     salary = v
                     break
@@ -237,14 +246,17 @@ def fetch_weworkremotely():
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
 def send_telegram(text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        r = requests.post(url, json={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        }, timeout=10)
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=10,
+        )
         r.raise_for_status()
     except Exception as e:
         print(f"telegram error: {e}")
@@ -253,6 +265,8 @@ def format_message(job, score):
     salary_line = f"💰 <b>{job['salary']}</b>" if job.get("salary") else "💰 Não informado"
     desc = short_description(job.get("description", ""))
     desc_line = f"📋 {desc}\n" if desc else ""
+    link = job.get("url") or "N/A"
+    link_tag = f'<a href="{link}">Ver vaga</a>' if link != "N/A" else "Link não disponível"
 
     return (
         f"🎯 <b>{job['title']}</b>\n"
@@ -263,7 +277,7 @@ def format_message(job, score):
         f"{desc_line}"
         f"──────────────────────\n"
         f"{salary_line}\n"
-        f"🔗 <a href=\"{job['url']}\">Ver vaga</a>\n"
+        f"🔗 {link_tag}\n"
         f"⭐ Score: {score}"
     )
 
@@ -283,7 +297,7 @@ def main():
 
     sent_count = 0
     for job in all_jobs:
-        jid = job_id(job)
+        jid = make_job_id(job)
         if jid in seen:
             continue
         seen.add(jid)
