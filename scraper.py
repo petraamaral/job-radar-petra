@@ -45,6 +45,14 @@ EXCLUDE_TITLE_QUICK = [
     r"\bsenior manager\b", r"\bjunior\b", r"\bjr\b",
 ]
 
+# Minimum relevance: at least one of these must appear in title or description
+# before we bother calling Groq
+RELEVANCE_KEYWORDS = [
+    "customer", "support", "success", "operations", "ops", "cx ", "cs ",
+    "crm", "zendesk", "hubspot", "onboarding", "retention", "churn",
+    "account", "service", "helpdesk", "client", "revenue",
+]
+
 
 # ── Storage ───────────────────────────────────────────────────────────────────
 def load_seen():
@@ -98,9 +106,8 @@ def analyze_with_groq(job):
       red_flags: one sentence or empty string
     """
     if not GROQ_API_KEY:
-        # Fallback: pass everything through with neutral score
-        return {"remote_type": "unclear", "fit_score": 50,
-                "fit_reason": "Groq not configured.", "red_flags": ""}
+        return {"remote_type": "skip", "fit_score": 0,
+                "fit_reason": "GROQ_API_KEY not configured.", "red_flags": ""}
 
     desc_truncated = strip_html(job.get("description", ""))[:1500]
 
@@ -162,8 +169,8 @@ fit_score rules:
         }
     except Exception as e:
         print(f"groq error: {e}")
-        return {"remote_type": "unclear", "fit_score": 50,
-                "fit_reason": "Analysis unavailable.", "red_flags": ""}
+        return {"remote_type": "skip", "fit_score": 0,
+                "fit_reason": "Groq analysis failed.", "red_flags": ""}
 
 
 # ── Sources ───────────────────────────────────────────────────────────────────
@@ -342,12 +349,19 @@ def main():
             print(f"  Excluded (title): {job['title']}")
             continue
 
-        # Groq analysis
+        # Relevance pre-filter — skip obvious non-CS-Ops jobs before calling Groq
+        combined = (job["title"] + " " + job.get("description", "")).lower()
+        if not any(kw in combined for kw in RELEVANCE_KEYWORDS):
+            print(f"  Skipped (not relevant): {job['title']}")
+            continue
+
+        # Groq analysis — sleep to respect 30 RPM rate limit
+        time.sleep(2)
         analysis = analyze_with_groq(job)
         print(f"  [{analysis['remote_type']} | {analysis['fit_score']}%] {job['title']}")
 
         # Discard US-only and low-fit
-        if analysis["remote_type"] in ("us_only", "hybrid_us"):
+        if analysis["remote_type"] in ("us_only", "hybrid_us", "skip"):
             continue
         if analysis["fit_score"] < 45:
             continue
