@@ -9,10 +9,9 @@ from pathlib import Path
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-SERPAPI_KEY = os.environ["SERPAPI_KEY"]
+SERPAPI_KEY = os.environ.get("SERPAPI_KEY", "")
 SEEN_FILE = Path("seen_jobs.json")
 
-# Queries para Google Jobs — 3 por dia = 90/mês, dentro do free tier de 250
 SERPAPI_QUERIES = [
     "CX Operations Specialist remote",
     "Support Operations Specialist remote",
@@ -39,15 +38,33 @@ EXCLUDE_TITLE = [
 ]
 
 EXCLUDE_DESC = [
+    # Cidadania / autorização
     "us citizen", "us citizenship", "green card",
     "must be authorized to work in the us",
+    "authorized to work in the united states",
+    "work authorization in the us",
+    "us work authorization",
+    # Localização US restritiva
     "must be located in the united states",
-    "must reside in the us", "must be based in the united states",
-    "only considering us", "eligible to work in the us",
-    "us work authorization required", "us-based only",
-    "united states only", "north america only",
-    "canada or us only", "must be in the us",
-    "r$", "reais", " clt", "são paulo", "rio de janeiro",
+    "must reside in the us",
+    "must be based in the us",
+    "must be based in the united states",
+    "based anywhere in the us",
+    "based in the us",
+    "position is based in the us",
+    "this position can be based anywhere in the us",
+    "only considering us",
+    "us-based only",
+    "united states only",
+    "located in the united states",
+    "reside in the united states",
+    "north america only",
+    "canada or us only",
+    "must be in the us",
+    "open to us residents",
+    "us residents only",
+    # Vagas BR
+    "r$", "reais", " clt ", "são paulo", "rio de janeiro",
     "belo horizonte", "pessoa negra", "afirmativa",
 ]
 
@@ -94,10 +111,30 @@ def short_description(text, max_chars=180):
         return text
     return text[:max_chars].rsplit(" ", 1)[0] + "..."
 
+def extract_apply_link(item):
+    # Tenta pegar o link direto da vaga nos apply_options
+    for opt in item.get("apply_options", []):
+        link = opt.get("link", "")
+        if link and "google.com" not in link:
+            return link
+    # Fallback: related_links
+    for rl in item.get("related_links", []):
+        link = rl.get("link", "")
+        if link and "google.com" not in link:
+            return link
+    # Último recurso: link do Google Jobs com job_id se disponível
+    job_id_val = item.get("job_id", "")
+    if job_id_val:
+        return f"https://www.google.com/search?q={job_id_val}&udm=8"
+    return ""
 
-# ── SerpAPI Google Jobs ───────────────────────────────────────────────────────
+
+# ── SerpAPI ───────────────────────────────────────────────────────────────────
 def fetch_serpapi(query):
     jobs = []
+    if not SERPAPI_KEY:
+        print("SERPAPI_KEY não definida, pulando Google Jobs.")
+        return jobs
     try:
         params = {
             "engine": "google_jobs",
@@ -105,32 +142,29 @@ def fetch_serpapi(query):
             "hl": "en",
             "api_key": SERPAPI_KEY,
         }
-        r = requests.get(
-            "https://serpapi.com/search",
-            params=params,
-            timeout=20,
-        )
+        r = requests.get("https://serpapi.com/search", params=params, timeout=20)
         data = r.json()
+
         for item in data.get("jobs_results", []):
-            # Extrai salário dos highlights se disponível
+            # Extrai salário
             salary = ""
-            for ext in item.get("detected_extensions", {}).values():
-                if isinstance(ext, str) and any(c in ext for c in ["$", "€", "£", "USD", "EUR"]):
-                    salary = ext
+            det = item.get("detected_extensions", {})
+            for v in det.values():
+                if isinstance(v, str) and any(c in v for c in ["$", "€", "£", "USD", "EUR"]):
+                    salary = v
                     break
-            highlights = item.get("job_highlights", [])
-            for h in highlights:
-                for item_h in h.get("items", []):
-                    if any(c in item_h for c in ["$", "€", "£", "USD", "EUR", "/month", "/year", "/hr"]):
-                        salary = item_h
-                        break
+            if not salary:
+                for h in item.get("job_highlights", []):
+                    for hi in h.get("items", []):
+                        if any(c in hi for c in ["$", "€", "£", "/month", "/year", "/hr"]):
+                            salary = hi
+                            break
 
             jobs.append({
                 "title": item.get("title", ""),
                 "company": item.get("company_name", ""),
                 "description": item.get("description", ""),
-                "url": item.get("related_links", [{}])[0].get("link", "")
-                       or f"https://www.google.com/search?q={query.replace(' ','+')}",
+                "url": extract_apply_link(item),
                 "salary": salary,
                 "source": f"Google Jobs · via {item.get('via', 'N/A')}",
             })
@@ -140,7 +174,7 @@ def fetch_serpapi(query):
     return jobs
 
 
-# ── Fontes RSS de backup ──────────────────────────────────────────────────────
+# ── Remote OK ─────────────────────────────────────────────────────────────────
 def fetch_remoteok():
     jobs = []
     try:
@@ -152,13 +186,13 @@ def fetch_remoteok():
         for item in r.json():
             if not isinstance(item, dict) or "position" not in item:
                 continue
-            salary = ""
             s_min = item.get("salary_min")
             s_max = item.get("salary_max")
+            salary = ""
             if s_min and s_max:
-                salary = f"${s_min:,}–${s_max:,}/year"
+                salary = f"${int(s_min):,}–${int(s_max):,}/year"
             elif s_min:
-                salary = f"${s_min:,}/year"
+                salary = f"${int(s_min):,}/year"
             jobs.append({
                 "title": item.get("position", ""),
                 "company": item.get("company", ""),
@@ -172,31 +206,32 @@ def fetch_remoteok():
     return jobs
 
 
+# ── We Work Remotely ──────────────────────────────────────────────────────────
 def fetch_weworkremotely():
     import xml.etree.ElementTree as ET
     jobs = []
-    feeds = [
-        "https://weworkremotely.com/categories/remote-customer-support-jobs.rss",
-    ]
-    for url in feeds:
-        try:
-            r = requests.get(url, headers={"User-Agent": "JobRadarBot/1.0"}, timeout=15)
-            root = ET.fromstring(r.content)
-            for item in root.findall(".//item"):
-                title_raw = item.findtext("title") or ""
-                company = title_raw.split(" at ")[-1].strip() if " at " in title_raw else ""
-                title = title_raw.split(" at ")[0].strip() if " at " in title_raw else title_raw
-                desc = strip_html(item.findtext("description") or "")
-                jobs.append({
-                    "title": title,
-                    "company": company,
-                    "description": desc,
-                    "url": item.findtext("link") or "",
-                    "salary": "",
-                    "source": "We Work Remotely",
-                })
-        except Exception as e:
-            print(f"weworkremotely error: {e}")
+    try:
+        r = requests.get(
+            "https://weworkremotely.com/categories/remote-customer-support-jobs.rss",
+            headers={"User-Agent": "JobRadarBot/1.0"},
+            timeout=15,
+        )
+        root = ET.fromstring(r.content)
+        for item in root.findall(".//item"):
+            title_raw = item.findtext("title") or ""
+            company = title_raw.split(" at ")[-1].strip() if " at " in title_raw else ""
+            title = title_raw.split(" at ")[0].strip() if " at " in title_raw else title_raw
+            desc = strip_html(item.findtext("description") or "")
+            jobs.append({
+                "title": title,
+                "company": company,
+                "description": desc,
+                "url": item.findtext("link") or "",
+                "salary": "",
+                "source": "We Work Remotely",
+            })
+    except Exception as e:
+        print(f"weworkremotely error: {e}")
     return jobs
 
 
@@ -215,17 +250,18 @@ def send_telegram(text):
         print(f"telegram error: {e}")
 
 def format_message(job, score):
-    salary_line = f"\n💰 <b>{job['salary']}</b>" if job.get("salary") else "\n💰 Não informado"
+    salary_line = f"💰 <b>{job['salary']}</b>" if job.get("salary") else "💰 Não informado"
     desc = short_description(job.get("description", ""))
-    desc_line = f"\n📋 {desc}" if desc else ""
+    desc_line = f"📋 {desc}\n" if desc else ""
 
     return (
         f"🎯 <b>{job['title']}</b>\n"
         f"──────────────────────\n"
         f"🏢 Empresa: {job.get('company') or 'N/A'}\n"
         f"📡 Portal: {job['source']}\n"
-        f"──────────────────────{desc_line}\n"
-        f"──────────────────────"
+        f"──────────────────────\n"
+        f"{desc_line}"
+        f"──────────────────────\n"
         f"{salary_line}\n"
         f"🔗 <a href=\"{job['url']}\">Ver vaga</a>\n"
         f"⭐ Score: {score}"
@@ -235,19 +271,15 @@ def format_message(job, score):
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     seen = load_seen()
-    print(f"[{datetime.now()}] Iniciando Job Radar. {len(seen)} vagas já vistas.")
+    print(f"[{datetime.now()}] Job Radar iniciado. {len(seen)} vagas já vistas.")
 
     all_jobs = []
-
-    # Google Jobs via SerpAPI (fonte principal)
     for q in SERPAPI_QUERIES:
         all_jobs += fetch_serpapi(q)
-
-    # Fontes RSS de backup
     all_jobs += fetch_remoteok()
     all_jobs += fetch_weworkremotely()
 
-    print(f"Total coletado: {len(all_jobs)} vagas.")
+    print(f"Total coletado: {len(all_jobs)} vagas brutas.")
 
     sent_count = 0
     for job in all_jobs:
@@ -268,8 +300,7 @@ def main():
     print(f"Concluído. {sent_count} vagas enviadas.")
 
     summary = (
-        f"✅ <b>Job Radar concluído</b>\n"
-        f"📨 {sent_count} vagas novas encontradas"
+        f"✅ <b>Job Radar concluído</b>\n📨 {sent_count} vagas novas encontradas"
         if sent_count > 0
         else "✅ Job Radar concluído — nenhuma vaga nova relevante hoje."
     )
