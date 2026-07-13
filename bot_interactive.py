@@ -68,6 +68,7 @@ def save_pending_job(chat_id: str, job: dict, analysis: dict) -> str | None:
         "source":  job.get("source", ""),
         "salary":  job.get("salary") or analysis.get("salary", ""),
         "grade":   analysis.get("grade", ""),
+        "description": job.get("description", ""),
         "analysis": json.dumps({
             "what_they_want": analysis.get("what_they_want", ""),
             "tools_required": analysis.get("tools_required", ""),
