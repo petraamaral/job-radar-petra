@@ -105,15 +105,27 @@ DEAD_LINK_DOMAINS = [
     "trovit.com", "adzuna.com", "vacancyglobal.up.railway.app",
     "jobleads.com", "bebee.com", "lensa.com", "jobrapido",
     "learn4good.com", "jobtome.com", "kitjob.com",
+    "mumbailocal.net", "applyjobs247", "jobhub.com",
+    "jazzhr.com", "careerzynith", "globelife",
+]
+
+# Via sources to block even if the final link looks ok
+DEAD_VIA_SOURCES = [
+    "jobhub", "jobleads", "bebee", "lensa", "learn4good",
+    "jobrapido", "jooble", "adzuna", "trovit",
 ]
 
 # ── Title exclusions ──────────────────────────────────────────────────────────
 EXCLUDE_TITLE_QUICK = [
     r"\bdirector\b", r"\bvp\b", r"\bvice president\b", r"\bhead of\b",
-    r"\bsenior manager\b", r"\bjr\b",
+    r"\bsenior manager\b", r"\bjr\b", r"\bregional manager\b",
+    r"\bbenefits representative\b", r"\bpayroll\b", r"\baccountant\b",
+    r"\bfinancial controller\b", r"\bfinancial analyst\b",
     r"\bsatellite\b", r"\bhealthcare\b", r"\bnurse\b", r"\bphysician\b",
     r"\bengineering manager\b", r"\bsoftware engineer\b", r"\bdevops\b",
-    r"\bfinancial analyst\b", r"\baccountant\b", r"\bsupervisor\b",
+    r"\bsales development\b", r"\bsdr\b", r"\bbdr\b",
+    r"\bsales engineer\b", r"\bsolutions engineer\b",
+    r"\bincident response\b", r"\bthreat\b", r"\bcybersecurity analyst\b",
 ]
 
 # ── Title whitelist — at least one term must match ───────────────────────────
@@ -245,28 +257,34 @@ def analyze_with_groq(job):
         f"JOB POSTING:\nTitle: {title}\nCompany: {company}\nDescription: {desc}\n\n"
         "Respond ONLY with raw JSON, no markdown:\n"
         "{\n"
+        '  "role_type": "<cs_ops|sales|technical|management|other>",\n'
         '  "remote_type": "<global|us_only|hybrid_us|unclear>",\n'
-        '  "remote_score": <0-100: 100=fully remote no country restriction, 0=onsite or US only>,\n'
-        '  "title_score": <0-100: how well title matches CS Ops/CX Ops/Support Ops/Customer Success>,\n'
-        '  "tool_score": <0-100: overlap between required tools and candidate skills>,\n'
-        '  "level_score": <0-100: 100=perfect level match, 0=too senior or too junior>,\n'
-        '  "timezone_score": <0-100: 100=Americas or EMEA, 50=unclear, 0=Asia-Pacific only>,\n'
-        '  "what_they_want": "<2 sentences on actual day-to-day duties — skip boilerplate>",\n'
+        '  "remote_score": <0-100>,\n'
+        '  "title_score": <0-100>,\n'
+        '  "tool_score": <0-100>,\n'
+        '  "level_score": <0-100>,\n'
+        '  "timezone_score": <0-100>,\n'
+        '  "what_they_want": "<2 sentences on actual duties — skip boilerplate. If vague write: Description too vague.>",\n'
         '  "tools_required": "<comma-separated tools explicitly mentioned, or: not specified>",\n'
-        '  "salary": "<salary range if mentioned, or: not mentioned>",\n'
-        '  "timezone": "<timezone/region requirement if mentioned, or: not mentioned>",\n'
+        '  "salary": "<salary range explicitly stated IN THE JOB POSTING only — never use candidate salary. If not mentioned write: not mentioned>",\n'
+        '  "timezone": "<timezone/region if mentioned, or: not mentioned>",\n'
         '  "red_flags": "<specific real concern from posting only — empty string if none>"\n'
         "}\n\n"
         "RULES:\n"
-        "- remote_type global = no location restriction. us_only = requires US residency/auth. hybrid_us = remote + occasional US onsite.\n"
-        "- red_flags: NEVER flag work authorization unless posting explicitly requires US citizenship/greencard. Never flag salary unless under $1500/month.\n"
-        "- level_score: 4+ years experience is the candidate baseline. Penalize if 6+ years required or if role is clearly junior."
+        "- role_type: cs_ops = Customer Success, CX Ops, Support Ops, CS Operations, Revenue Ops focused on retention/processes. "
+        "sales = quota-carrying, outbound, cold calls, new logo, AE/AM with closing responsibilities. "
+        "technical = engineering, developer, devops. management = people manager with direct reports. other = anything else.\n"
+        "- remote_type: global = no location restriction. us_only = requires US residency/auth. hybrid_us = remote + occasional US onsite.\n"
+        "- salary: ONLY extract salary explicitly stated in the job posting. Never output the candidate profile salary.\n"
+        "- red_flags: flag if role requires language candidate does not speak, outbound/cold calling as primary duty, US work auth required, or quota as primary comp.\n"
+        "- level_score: 4+ years is the candidate baseline. Penalize if 6+ years required or clearly junior."
     )
 
     try:
-        r = groq_request(prompt, max_tokens=400)
+        r = groq_request(prompt, max_tokens=450)
 
-        # Weighted composite score
+        role_type = r.get("role_type", "other")
+
         composite = (
             r.get("remote_score",   0) * 0.30 +
             r.get("title_score",    0) * 0.25 +
@@ -276,6 +294,7 @@ def analyze_with_groq(job):
         )
 
         return {
+            "role_type":      role_type,
             "remote_type":    r.get("remote_type", "unclear"),
             "composite":      int(composite),
             "grade":          score_to_grade(int(composite)),
@@ -286,7 +305,7 @@ def analyze_with_groq(job):
             "timezone_score": r.get("timezone_score", 0),
             "what_they_want": r.get("what_they_want", ""),
             "tools_required": r.get("tools_required", ""),
-            "salary":         r.get("salary", ""),
+            "salary":         r.get("salary", "not mentioned"),
             "timezone":       r.get("timezone", ""),
             "red_flags":      r.get("red_flags", ""),
         }
@@ -324,6 +343,9 @@ def fetch_serpapi(query):
             url = extract_apply_link(item)
             if is_dead_link(url):
                 continue
+            via = item.get("via", "").lower()
+            if any(bad in via for bad in DEAD_VIA_SOURCES):
+                continue
             jobs.append({
                 "title":       item.get("title", ""),
                 "company":     item.get("company_name", ""),
@@ -342,7 +364,16 @@ def fetch_rss(url, name):
     jobs = []
     try:
         r = requests.get(url, headers={"User-Agent": "JobRadarBot/2.0"}, timeout=15)
-        root = ET.fromstring(r.content)
+        # Clean common XML issues before parsing
+        content = r.content.decode("utf-8", errors="replace")
+        content = content.encode("utf-8")
+        try:
+            root = ET.fromstring(content)
+        except ET.ParseError:
+            # Try stripping invalid chars
+            import re as _re
+            clean = _re.sub(rb'[\x00-\x08\x0b\x0c\x0e-\x1f]', b'', content)
+            root = ET.fromstring(clean)
         for item in root.findall(".//item"):
             title_raw = item.findtext("title") or ""
             company   = title_raw.split(" at ")[-1].strip() if " at " in title_raw else ""
@@ -577,9 +608,13 @@ def main():
 
         grade = analysis["grade"]
         remote = analysis["remote_type"]
-        print(f"  [{grade} | {remote}] {job['title']} @ {job.get('company','')}")
+        role_type = analysis["role_type"]
+        print(f"  [{grade} | {role_type} | {remote}] {job['title']} @ {job.get('company','')}")
 
         if remote in ("us_only", "hybrid_us"):
+            continue
+        if role_type in ("sales", "technical", "management"):
+            print(f"  Skipped (role_type={role_type}): {job['title']}")
             continue
         if grade not in ("A", "B"):
             continue
