@@ -16,20 +16,35 @@ SEEN_FILE        = Path("seen_jobs.json")
 
 CANDIDATE_PROFILE = """
 Name: Petra Iglezias Amaral
-Role target: CS Operations Specialist / CX Operations / Support Operations / Customer Success
+Role target: CS Operations Specialist / CX Operations / Support Operations / Customer Success / Revenue Operations
 Experience: 4+ years
-Key skills: IVR design and deployment (CloudTalk), skills-based routing, Zendesk administration,
-  knowledge base architecture, HubSpot Service Hub (certified), Power BI (certified), Metabase,
-  Python scripting for automation, SQL for data querying, multilingual onboarding
-  (Portuguese/English/Spanish), NPS/CSAT frameworks, ARR retention, churn analysis,
-  familiar with Gainsight and ChurnZero health score frameworks.
-Track record: 30+ concurrent accounts, zero churn, 9.4 CSAT, IVR built from scratch,
-  data coverage scaled 10% to 100% via Python automation (still in production),
-  fraud prevention solo coverage at international fintech with zero chargebacks.
+
+Who she is: Ops professional who spots broken processes before anyone names them and builds the fix.
+Uses AI as a core work tool — co-developed two production systems (WMS + CRM/FSM) using AI as
+development partner, built a Python automation that scaled data coverage from 10% to 100% (still
+running in production), and uses LLMs daily for analysis, scoring, and workflow automation.
+Comfortable at the intersection of operations, data, and product thinking.
+
+Soft skills that show up as outcomes: At 6 months at PagBrasil, proactively diagnosed a support
+operation running on reactive firefighting, ran ticket volume analysis across categories, and
+presented a full strategic transformation proposal (Impulso CS) to leadership — unprompted.
+Also designed a cross-team innovation program (Sinergia PB) that ran three iterations, mixing
+teams from CS, Fraud, Payments, and Integrations to solve multidisciplinary business problems.
+
+Hard skills: Zendesk administration, HubSpot Service Hub (certified), Power BI (certified),
+Metabase, Python scripting for automation, SQL for data querying and root cause analysis,
+knowledge base architecture, multilingual onboarding (Portuguese/English/Spanish),
+NPS/CSAT frameworks, ARR retention tracking, churn analysis,
+familiar with Gainsight and ChurnZero health score frameworks, GDPR awareness.
+
+Track record: 30+ concurrent accounts, zero churn, 9.4 CSAT, data coverage 10% to 100%
+via Python automation still in production, fraud prevention solo 20 days zero chargebacks,
+22% reduction in late deliveries via SQL root cause analysis at current role.
+
 Work authorization: Brazilian national. NOT eligible for US work authorization.
-  Fully remote for any company worldwide EXCEPT US-only roles.
-  Open to Americas or EMEA timezones.
-Salary expectation: USD $2,500-$4,000/month or BRL R$3,500-4,500/month.
+Fully remote for any company worldwide EXCEPT US-only roles.
+Open to Americas or EMEA timezones.
+Salary: USD $2,500-$4,000/month or BRL R$3,500-4,500/month.
 Languages: English (full professional), Portuguese (native), Spanish (conversational).
 """
 
@@ -41,27 +56,47 @@ SERPAPI_QUERIES = [
     "Zendesk Administrator remote",
     "Customer Success Operations remote",
     "Support Operations Specialist remote",
+    "Customer Success Manager remote LATAM",
+    "Revenue Operations Analyst remote",
+    "Customer Success Associate remote",
+]
+
+# ── Lever companies to scan directly ─────────────────────────────────────────
+# Lever public postings: jobs.lever.co/{slug}
+LEVER_COMPANIES = [
+    "sophos", "truelayer", "flipp", "processstreet",
+    "intercom", "front", "gladly", "kustomer",
+    "helpscout", "dialpad", "aircall", "talkdesk",
+    "planhat", "vitally", "churnzero", "gainsight",
+    "mixpanel", "amplitude", "braze", "klaviyo",
+    "gorgias", "dixa", "supportlogic",
+    "rippling", "gusto", "ramp", "mercury",
+    "stripe", "plaid", "nubank", "nuvemshop",
+    "vtex", "cloudwalk", "pismo", "dock",
 ]
 
 # ── RSS sources — higher signal than Google Jobs ──────────────────────────────
 RSS_SOURCES = [
     {
         "url": "https://remotive.com/remote-jobs/rss/customer-service",
-        "name": "Remotive",
+        "name": "Remotive · Customer Service",
+    },
+    {
+        "url": "https://remotive.com/remote-jobs/rss/business",
+        "name": "Remotive · Business",
     },
     {
         "url": "https://weworkremotely.com/categories/remote-customer-support-jobs.rss",
-        "name": "We Work Remotely",
+        "name": "We Work Remotely · Support",
+    },
+    {
+        "url": "https://weworkremotely.com/categories/remote-sales-and-marketing-jobs.rss",
+        "name": "We Work Remotely · Sales & Marketing",
     },
 ]
 
-# ── Greenhouse companies to scan directly ─────────────────────────────────────
-# Add more slugs from: boards.greenhouse.io/{slug}
-GREENHOUSE_COMPANIES = [
-    "sophos", "trustedhealthcom", "pagerduty", "intercom",
-    "zapier", "gitlab", "hubspot", "drift", "freshworks",
-    "klaviyo", "gorgias", "dixa", "supportlogic",
-]
+# Greenhouse disabled direct API access — keeping list for future use
+GREENHOUSE_COMPANIES = []
 
 # ── Domains to block ──────────────────────────────────────────────────────────
 DEAD_LINK_DOMAINS = [
@@ -333,6 +368,29 @@ def fetch_greenhouse(company_slug):
         print(f"greenhouse error ({company_slug}): {e}")
     return jobs
 
+def fetch_lever(company_slug):
+    jobs = []
+    try:
+        url = f"https://api.lever.co/v0/postings/{company_slug}?mode=json"
+        r = requests.get(url, timeout=10)
+        if not r.ok:
+            return jobs
+        for item in r.json():
+            categories = item.get("categories", {})
+            jobs.append({
+                "title":       item.get("text", ""),
+                "company":     company_slug.title(),
+                "description": strip_html(item.get("descriptionPlain", "") or item.get("description", "")),
+                "url":         item.get("hostedUrl", ""),
+                "salary":      "",
+                "source":      f"Lever · {company_slug}",
+                "source_quality": "ats_direct",
+            })
+        time.sleep(0.3)
+    except Exception as e:
+        print(f"lever error ({company_slug}): {e}")
+    return jobs
+
 def fetch_remoteok():
     jobs = []
     try:
@@ -434,11 +492,12 @@ def main():
 
     all_jobs = []
 
-    # 1. ATS direct (highest signal)
-    print("Fetching Greenhouse direct feeds...")
-    for slug in GREENHOUSE_COMPANIES:
-        fetched = fetch_greenhouse(slug)
-        print(f"  {slug}: {len(fetched)} jobs")
+    # 1. ATS direct — Lever (highest signal)
+    print("Fetching Lever direct feeds...")
+    for slug in LEVER_COMPANIES:
+        fetched = fetch_lever(slug)
+        if fetched:
+            print(f"  {slug}: {len(fetched)} jobs")
         all_jobs += fetched
 
     # 2. RSS feeds (good signal)
