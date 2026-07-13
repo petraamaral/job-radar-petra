@@ -1,10 +1,10 @@
-import requests
 import json
 import hashlib
 import os
 import time
 import re
 import xml.etree.ElementTree as ET
+import requests
 from datetime import datetime
 from pathlib import Path
 
@@ -48,21 +48,19 @@ Salary: USD $2,500-$4,000/month or BRL R$3,500-4,500/month.
 Languages: English (full professional), Portuguese (native), Spanish (conversational).
 """
 
-# ── Queries SerpAPI ───────────────────────────────────────────────────────────
-SERPAPI_QUERIES = [
-    "Customer Operations Specialist remote worldwide",
-    "CS Operations Specialist remote",
-    "CX Operations Analyst remote",
-    "Zendesk Administrator remote",
-    "Customer Success Operations remote",
-    "Support Operations Specialist remote",
-    "Customer Success Manager remote LATAM",
-    "Revenue Operations Analyst remote",
-    "Customer Success Associate remote",
+# ── JobSpy queries ────────────────────────────────────────────────────────────
+JOBSPY_QUERIES = [
+    "Customer Success Operations Specialist",
+    "CX Operations Analyst",
+    "Customer Operations Specialist",
+    "Support Operations Specialist",
+    "Zendesk Administrator",
+    "Customer Success Manager LATAM",
+    "Revenue Operations Analyst",
+    "Customer Success Associate",
 ]
 
-# ── Lever companies to scan directly ─────────────────────────────────────────
-# Lever public postings: jobs.lever.co/{slug}
+# ── Lever companies (kept as high-quality fallback) ───────────────────────────
 LEVER_COMPANIES = [
     "sophos", "truelayer", "flipp", "processstreet",
     "intercom", "front", "gladly", "kustomer",
@@ -75,7 +73,7 @@ LEVER_COMPANIES = [
     "vtex", "cloudwalk", "pismo", "dock",
 ]
 
-# ── RSS sources — higher signal than Google Jobs ──────────────────────────────
+# ── RSS feeds (reliable fallback) ─────────────────────────────────────────────
 RSS_SOURCES = [
     {
         "url": "https://remotive.com/remote-jobs/rss/customer-service",
@@ -95,27 +93,15 @@ RSS_SOURCES = [
     },
 ]
 
-# Greenhouse disabled direct API access — keeping list for future use
-GREENHOUSE_COMPANIES = []
-
-# ── Domains to block ──────────────────────────────────────────────────────────
-DEAD_LINK_DOMAINS = [
-    "liveblog365.com", "infinityfree.me", "quickswoop", "halvolink",
-    "hirevista", "skillorbit", "jobsearcher.com", "jooble.org",
-    "trovit.com", "adzuna.com", "vacancyglobal.up.railway.app",
-    "jobleads.com", "bebee.com", "lensa.com", "jobrapido",
-    "learn4good.com", "jobtome.com", "kitjob.com",
-    "mumbailocal.net", "applyjobs247", "jobhub.com",
-    "jazzhr.com", "careerzynith", "globelife",
+# ── Filters ───────────────────────────────────────────────────────────────────
+REQUIRE_TITLE_TERMS = [
+    r"\bcustomer\b", r"\bclient\b", r"\bcs\b", r"\bcx\b",
+    r"\bsupport\b", r"\bsuccess\b", r"\boperations\b", r"\bops\b",
+    r"\bzendesk\b", r"\bonboarding\b", r"\bretention\b", r"\bchurn\b",
+    r"\brevenue\b", r"\bservice\b", r"\bhelpdesk\b",
+    r"\bsales ops\b", r"\brev ops\b", r"\brevops\b",
 ]
 
-# Via sources to block even if the final link looks ok
-DEAD_VIA_SOURCES = [
-    "jobhub", "jobleads", "bebee", "lensa", "learn4good",
-    "jobrapido", "jooble", "adzuna", "trovit",
-]
-
-# ── Title exclusions ──────────────────────────────────────────────────────────
 EXCLUDE_TITLE_QUICK = [
     r"\bdirector\b", r"\bvp\b", r"\bvice president\b", r"\bhead of\b",
     r"\bsenior manager\b", r"\bjr\b", r"\bregional manager\b",
@@ -126,19 +112,24 @@ EXCLUDE_TITLE_QUICK = [
     r"\bsales development\b", r"\bsdr\b", r"\bbdr\b",
     r"\bsales engineer\b", r"\bsolutions engineer\b",
     r"\bincident response\b", r"\bthreat\b", r"\bcybersecurity analyst\b",
+    r"\badministrative assistant\b", r"\bexecutive assistant\b",
 ]
 
-# ── Title whitelist — at least one term must match ───────────────────────────
-# If none match, job is skipped regardless of other filters
-REQUIRE_TITLE_TERMS = [
-    r"\bcustomer\b", r"\bclient\b", r"\bcs\b", r"\bcx\b",
-    r"\bsupport\b", r"\bsuccess\b", r"\boperations\b", r"\bops\b",
-    r"\bzendesk\b", r"\bonboarding\b", r"\bretention\b", r"\bchurn\b",
-    r"\brevenue\b", r"\baccount\b", r"\bservice\b", r"\bhelpdesk\b",
-    r"\bsales ops\b", r"\brev ops\b", r"\brevops\b",
+DEAD_LINK_DOMAINS = [
+    "liveblog365.com", "infinityfree.me", "quickswoop", "halvolink",
+    "hirevista", "skillorbit", "jobsearcher.com", "jooble.org",
+    "trovit.com", "adzuna.com", "vacancyglobal.up.railway.app",
+    "jobleads.com", "bebee.com", "lensa.com", "jobrapido",
+    "learn4good.com", "jobtome.com", "kitjob.com",
+    "mumbailocal.net", "applyjobs247", "jobhub.com",
+    "jazzhr.com", "careerzynith", "globelife",
 ]
 
-MAX_PER_COMPANY = 3  # max jobs sent per company slug per run
+DEAD_VIA_SOURCES = [
+    "jobhub", "jobleads", "bebee", "lensa", "learn4good",
+    "jobrapido", "jooble", "adzuna", "trovit",
+]
+
 BROKEN_DESC_SIGNALS = [
     "internet explorer 11 is no longer supported",
     "please update to one of the following browsers",
@@ -146,16 +137,16 @@ BROKEN_DESC_SIGNALS = [
     "override the digital divide", "capitalise on low hanging fruit",
     "nanotechnology immersion", "testing 123", "will come and clean house",
     "please enable javascript", "sorry, internet explorer",
-    "description too vague", "eigenst",  # catches German garbage
+    "description too vague", "eigenst",
 ]
 
-# ── Relevance keywords ────────────────────────────────────────────────────────
 RELEVANCE_KEYWORDS = [
     "customer", "support", "success", "operations", "ops", "cx ", "cs ",
     "crm", "zendesk", "hubspot", "onboarding", "retention", "churn",
     "account", "service", "helpdesk", "client", "revenue",
 ]
 
+MAX_PER_COMPANY = 3
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -189,23 +180,10 @@ def is_broken_description(desc):
     d = (desc or "").lower()
     return any(s in d for s in BROKEN_DESC_SIGNALS)
 
-def extract_apply_link(item):
-    for opt in item.get("apply_options", []):
-        link = opt.get("link", "")
-        if link and "google.com" not in link and not is_dead_link(link):
-            return link
-    for rl in item.get("related_links", []):
-        link = rl.get("link", "")
-        if link and "google.com" not in link and not is_dead_link(link):
-            return link
-    return ""
 
+# ── Groq scoring ──────────────────────────────────────────────────────────────
 
-# ── Groq scoring (A-F across 5 dimensions) ───────────────────────────────────
-
-GRADE_THRESHOLDS = [
-    (90, "A"), (80, "B"), (70, "C"), (60, "D"),
-]
+GRADE_THRESHOLDS = [(90, "A"), (80, "B"), (70, "C"), (60, "D")]
 
 def score_to_grade(score):
     for threshold, grade in GRADE_THRESHOLDS:
@@ -216,7 +194,7 @@ def score_to_grade(score):
 def grade_emoji(grade):
     return {"A": "🟢", "B": "🔵", "C": "🟡", "D": "🟠", "F": "🔴"}.get(grade, "⚪")
 
-def groq_request(prompt, max_tokens=400):
+def groq_request(prompt, max_tokens=450):
     payload = {
         "model": "llama-3.1-8b-instant",
         "messages": [{"role": "user", "content": prompt}],
@@ -282,9 +260,7 @@ def analyze_with_groq(job):
 
     try:
         r = groq_request(prompt, max_tokens=450)
-
         role_type = r.get("role_type", "other")
-
         composite = (
             r.get("remote_score",   0) * 0.30 +
             r.get("title_score",    0) * 0.25 +
@@ -292,7 +268,6 @@ def analyze_with_groq(job):
             r.get("level_score",    0) * 0.10 +
             r.get("timezone_score", 0) * 0.10
         )
-
         return {
             "role_type":      role_type,
             "remote_type":    r.get("remote_type", "unclear"),
@@ -316,104 +291,47 @@ def analyze_with_groq(job):
 
 # ── Fetchers ──────────────────────────────────────────────────────────────────
 
-def fetch_serpapi(query):
+def fetch_jobspy(query):
+    """Primary source — scrapes Indeed, LinkedIn, ZipRecruiter, Google directly."""
     jobs = []
-    if not SERPAPI_KEY:
-        return jobs
     try:
-        r = requests.get("https://serpapi.com/search", params={
-            "engine": "google_jobs",
-            "q": query,
-            "hl": "en",
-            "chips": "date_posted:month",
-            "api_key": SERPAPI_KEY,
-        }, timeout=20)
-        for item in r.json().get("jobs_results", []):
+        from jobspy import scrape_jobs
+        df = scrape_jobs(
+            site_name=["indeed", "zip_recruiter", "google"],
+            search_term=query,
+            is_remote=True,
+            hours_old=48,
+            results_wanted=30,
+            description_format="markdown",
+            verbose=0,
+        )
+        for _, row in df.iterrows():
             salary = ""
-            for v in item.get("detected_extensions", {}).values():
-                if isinstance(v, str) and any(c in v for c in ["$", "€", "£", "USD"]):
-                    salary = v
-                    break
-            if not salary:
-                for h in item.get("job_highlights", []):
-                    for hi in h.get("items", []):
-                        if any(c in hi for c in ["$", "€", "/month", "/year", "/hr"]):
-                            salary = hi
-                            break
-            url = extract_apply_link(item)
-            if is_dead_link(url):
-                continue
-            via = item.get("via", "").lower()
-            if any(bad in via for bad in DEAD_VIA_SOURCES):
-                continue
-            jobs.append({
-                "title":       item.get("title", ""),
-                "company":     item.get("company_name", ""),
-                "description": item.get("description", ""),
-                "url":         url,
-                "salary":      salary,
-                "source":      f"Google Jobs · via {item.get('via', 'N/A')}",
-                "source_quality": "aggregator",
-            })
-        time.sleep(1)
-    except Exception as e:
-        print(f"serpapi error ({query}): {e}")
-    return jobs
+            if row.get("min_amount") and row.get("max_amount"):
+                interval = row.get("interval", "yearly")
+                currency = row.get("currency", "USD")
+                salary = f"{currency} {int(row['min_amount']):,}–{int(row['max_amount']):,}/{interval}"
+            elif row.get("min_amount"):
+                salary = f"{row.get('currency','USD')} {int(row['min_amount']):,}/{row.get('interval','yearly')}"
 
-def fetch_rss(url, name):
-    jobs = []
-    try:
-        r = requests.get(url, headers={"User-Agent": "JobRadarBot/2.0"}, timeout=15)
-        # Clean common XML issues before parsing
-        content = r.content.decode("utf-8", errors="replace")
-        content = content.encode("utf-8")
-        try:
-            root = ET.fromstring(content)
-        except ET.ParseError:
-            # Try stripping invalid chars
-            import re as _re
-            clean = _re.sub(rb'[\x00-\x08\x0b\x0c\x0e-\x1f]', b'', content)
-            root = ET.fromstring(clean)
-        for item in root.findall(".//item"):
-            title_raw = item.findtext("title") or ""
-            company   = title_raw.split(" at ")[-1].strip() if " at " in title_raw else ""
-            title     = title_raw.split(" at ")[0].strip()  if " at " in title_raw else title_raw
+            site = str(row.get("site", "unknown")).title()
             jobs.append({
-                "title":       title,
-                "company":     company,
-                "description": strip_html(item.findtext("description") or ""),
-                "url":         item.findtext("link") or "",
-                "salary":      "",
-                "source":      name,
-                "source_quality": "rss_direct",
+                "title":          str(row.get("title", "")),
+                "company":        str(row.get("company", "")),
+                "description":    str(row.get("description", "")),
+                "url":            str(row.get("job_url", "")),
+                "salary":         salary,
+                "source":         f"JobSpy · {site}",
+                "source_quality": "direct",
             })
+    except ImportError:
+        print("  jobspy not installed — skipping")
     except Exception as e:
-        print(f"rss error ({name}): {e}")
-    return jobs
-
-def fetch_greenhouse(company_slug):
-    jobs = []
-    try:
-        url = f"https://boards-api.greenhouse.io/v1/boards/{company_slug}/jobs"
-        r = requests.get(url, timeout=15)
-        if not r.ok:
-            return jobs
-        for item in r.json().get("jobs", []):
-            jobs.append({
-                "title":       item.get("title", ""),
-                "company":     company_slug.title(),
-                "description": strip_html(item.get("content", "")),
-                "url":         item.get("absolute_url", ""),
-                "salary":      "",
-                "source":      f"Greenhouse · {company_slug}",
-                "source_quality": "ats_direct",
-            })
-        time.sleep(0.5)
-    except Exception as e:
-        print(f"greenhouse error ({company_slug}): {e}")
+        print(f"  jobspy error ({query}): {e}")
     return jobs
 
 def fetch_lever(company_slug):
+    """High-quality ATS direct feed."""
     jobs = []
     try:
         url = f"https://api.lever.co/v0/postings/{company_slug}?mode=json"
@@ -421,19 +339,46 @@ def fetch_lever(company_slug):
         if not r.ok:
             return jobs
         for item in r.json():
-            categories = item.get("categories", {})
             jobs.append({
-                "title":       item.get("text", ""),
-                "company":     company_slug.title(),
-                "description": strip_html(item.get("descriptionPlain", "") or item.get("description", "")),
-                "url":         item.get("hostedUrl", ""),
-                "salary":      "",
-                "source":      f"Lever · {company_slug}",
+                "title":          item.get("text", ""),
+                "company":        company_slug.title(),
+                "description":    strip_html(item.get("descriptionPlain", "") or item.get("description", "")),
+                "url":            item.get("hostedUrl", ""),
+                "salary":         "",
+                "source":         f"Lever · {company_slug}",
                 "source_quality": "ats_direct",
             })
         time.sleep(0.3)
     except Exception as e:
-        print(f"lever error ({company_slug}): {e}")
+        print(f"  lever error ({company_slug}): {e}")
+    return jobs
+
+def fetch_rss(url, name):
+    """RSS feeds as reliable fallback."""
+    jobs = []
+    try:
+        r = requests.get(url, headers={"User-Agent": "JobRadarBot/2.0"}, timeout=15)
+        content = r.content.decode("utf-8", errors="replace").encode("utf-8")
+        try:
+            root = ET.fromstring(content)
+        except ET.ParseError:
+            clean = re.sub(rb'[\x00-\x08\x0b\x0c\x0e-\x1f]', b'', content)
+            root = ET.fromstring(clean)
+        for item in root.findall(".//item"):
+            title_raw = item.findtext("title") or ""
+            company   = title_raw.split(" at ")[-1].strip() if " at " in title_raw else ""
+            title     = title_raw.split(" at ")[0].strip()  if " at " in title_raw else title_raw
+            jobs.append({
+                "title":          title,
+                "company":        company,
+                "description":    strip_html(item.findtext("description") or ""),
+                "url":            item.findtext("link") or "",
+                "salary":         "",
+                "source":         name,
+                "source_quality": "rss_direct",
+            })
+    except Exception as e:
+        print(f"  rss error ({name}): {e}")
     return jobs
 
 def fetch_remoteok():
@@ -450,20 +395,20 @@ def fetch_remoteok():
             s_min = item.get("salary_min")
             s_max = item.get("salary_max")
             salary = (
-                f"${int(s_min):,}-${int(s_max):,}/year" if s_min and s_max
+                f"${int(s_min):,}–${int(s_max):,}/year" if s_min and s_max
                 else f"${int(s_min):,}/year" if s_min else ""
             )
             jobs.append({
-                "title":       item.get("position", ""),
-                "company":     item.get("company", ""),
-                "description": item.get("description", ""),
-                "url":         item.get("url", ""),
-                "salary":      salary,
-                "source":      "Remote OK",
+                "title":          item.get("position", ""),
+                "company":        item.get("company", ""),
+                "description":    item.get("description", ""),
+                "url":            item.get("url", ""),
+                "salary":         salary,
+                "source":         "Remote OK",
                 "source_quality": "rss_direct",
             })
     except Exception as e:
-        print(f"remoteok error: {e}")
+        print(f"  remoteok error: {e}")
     return jobs
 
 
@@ -482,7 +427,7 @@ def send_telegram(text):
             timeout=10,
         ).raise_for_status()
     except Exception as e:
-        print(f"telegram error: {e}")
+        print(f"  telegram error: {e}")
 
 def format_message(job, analysis):
     grade   = analysis["grade"]
@@ -494,8 +439,6 @@ def format_message(job, analysis):
     flags   = analysis.get("red_flags", "")
     link    = job.get("url", "")
     link_tag = f'<a href="{link}">Ver vaga</a>' if link else "Link não disponível"
-
-    # Dimension breakdown
     dims = (
         f"Remote {analysis['remote_score']} · "
         f"Title {analysis['title_score']} · "
@@ -503,7 +446,6 @@ def format_message(job, analysis):
         f"Level {analysis['level_score']} · "
         f"TZ {analysis['timezone_score']}"
     )
-
     lines = [
         f"{emoji} <b>Grade {grade}</b> · <b>{job['title']}</b>",
         f"──────────────────────",
@@ -525,46 +467,14 @@ def format_message(job, analysis):
     ]
     if flags:
         lines.append(f"⚠️ {flags}")
-
     return "\n".join(lines)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main():
-    seen = load_seen()
-    print(f"[{datetime.now()}] Job Radar v2 iniciado. {len(seen)} vagas já vistas.")
-
-    all_jobs = []
-
-    # 1. ATS direct — Lever (highest signal)
-    print("Fetching Lever direct feeds...")
-    for slug in LEVER_COMPANIES:
-        fetched = fetch_lever(slug)
-        if fetched:
-            print(f"  {slug}: {len(fetched)} jobs")
-        all_jobs += fetched
-
-    # 2. RSS feeds (good signal)
-    print("Fetching RSS feeds...")
-    for source in RSS_SOURCES:
-        fetched = fetch_rss(source["url"], source["name"])
-        print(f"  {source['name']}: {len(fetched)} jobs")
-        all_jobs += fetched
-    all_jobs += fetch_remoteok()
-
-    # 3. SerpAPI as fallback
-    if SERPAPI_KEY:
-        print("Fetching SerpAPI...")
-        for q in SERPAPI_QUERIES:
-            fetched = fetch_serpapi(q)
-            print(f"  '{q}': {len(fetched)} jobs")
-            all_jobs += fetched
-
-    print(f"Total coletado: {len(all_jobs)} vagas brutas.")
-
+def process_jobs(all_jobs, seen):
     sent_a = sent_b = 0
-    sent_per_company = {}  # track count per company slug
+    sent_per_company = {}
 
     for job in all_jobs:
         jid = make_job_id(job)
@@ -572,49 +482,36 @@ def main():
             continue
         seen.add(jid)
 
-        # 1. Title whitelist — must match at least one CS/Ops term
         if not passes_title_whitelist(job["title"]):
-            print(f"  Skipped (not CS/Ops title): {job['title']}")
             continue
-
-        # 2. Title blacklist
         if quick_exclude(job["title"]):
             continue
-
-        # 3. Dead link filter
         if is_dead_link(job.get("url", "")):
             continue
-
-        # 4. Broken description filter
         if is_broken_description(job.get("description", "")):
             continue
 
-        # 5. Relevance pre-filter
         combined = (job["title"] + " " + job.get("description", "")).lower()
         if not any(kw in combined for kw in RELEVANCE_KEYWORDS):
             continue
 
-        # 6. Company cap — max 3 per company per run
         company_key = job.get("company", "unknown").lower()
         if sent_per_company.get(company_key, 0) >= MAX_PER_COMPANY:
-            print(f"  Skipped (company cap): {job['title']} @ {job.get('company','')}")
             continue
 
-        # 7. Groq analysis
         time.sleep(2)
         analysis = analyze_with_groq(job)
         if not analysis:
             continue
 
-        grade = analysis["grade"]
-        remote = analysis["remote_type"]
+        grade     = analysis["grade"]
+        remote    = analysis["remote_type"]
         role_type = analysis["role_type"]
         print(f"  [{grade} | {role_type} | {remote}] {job['title']} @ {job.get('company','')}")
 
         if remote in ("us_only", "hybrid_us"):
             continue
         if role_type in ("sales", "technical", "management"):
-            print(f"  Skipped (role_type={role_type}): {job['title']}")
             continue
         if grade not in ("A", "B"):
             continue
@@ -627,19 +524,54 @@ def main():
             sent_b += 1
         time.sleep(0.5)
 
+    return sent_a, sent_b
+
+def main():
+    seen = load_seen()
+    print(f"[{datetime.now()}] Job Radar v3 iniciado. {len(seen)} vagas já vistas.")
+
+    all_jobs = []
+
+    # 1. JobSpy — Indeed, ZipRecruiter, Google (primary source)
+    print("Fetching via JobSpy...")
+    for query in JOBSPY_QUERIES:
+        fetched = fetch_jobspy(query)
+        print(f"  '{query}': {len(fetched)} jobs")
+        all_jobs += fetched
+        time.sleep(3)
+
+    # 2. Lever direct (high-quality ATS)
+    print("Fetching Lever direct feeds...")
+    for slug in LEVER_COMPANIES:
+        fetched = fetch_lever(slug)
+        if fetched:
+            print(f"  {slug}: {len(fetched)} jobs")
+        all_jobs += fetched
+
+    # 3. RSS feeds
+    print("Fetching RSS feeds...")
+    for source in RSS_SOURCES:
+        fetched = fetch_rss(source["url"], source["name"])
+        print(f"  {source['name']}: {len(fetched)} jobs")
+        all_jobs += fetched
+    all_jobs += fetch_remoteok()
+
+    print(f"Total coletado: {len(all_jobs)} vagas brutas.")
+
+    sent_a, sent_b = process_jobs(all_jobs, seen)
+
     save_seen(seen)
 
     total = sent_a + sent_b
     summary = (
-        f"✅ <b>Job Radar v2 concluído</b>\n"
+        f"✅ <b>Job Radar v3 concluído</b>\n"
         f"🟢 Grade A: {sent_a}  🔵 Grade B: {sent_b}\n"
         f"📨 Total enviado: {total}"
         if total > 0
-        else "✅ Job Radar v2 concluído — nenhuma vaga A ou B hoje."
+        else "✅ Job Radar v3 concluído — nenhuma vaga A ou B hoje."
     )
     send_telegram(summary)
     print(f"Concluído. A={sent_a} B={sent_b}")
-
 
 if __name__ == "__main__":
     main()
