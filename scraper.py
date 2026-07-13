@@ -116,7 +116,17 @@ EXCLUDE_TITLE_QUICK = [
     r"\bfinancial analyst\b", r"\baccountant\b", r"\bsupervisor\b",
 ]
 
-# ── Broken description signals ────────────────────────────────────────────────
+# ── Title whitelist — at least one term must match ───────────────────────────
+# If none match, job is skipped regardless of other filters
+REQUIRE_TITLE_TERMS = [
+    r"\bcustomer\b", r"\bclient\b", r"\bcs\b", r"\bcx\b",
+    r"\bsupport\b", r"\bsuccess\b", r"\boperations\b", r"\bops\b",
+    r"\bzendesk\b", r"\bonboarding\b", r"\bretention\b", r"\bchurn\b",
+    r"\brevenue\b", r"\baccount\b", r"\bservice\b", r"\bhelpdesk\b",
+    r"\bsales ops\b", r"\brev ops\b", r"\brevops\b",
+]
+
+MAX_PER_COMPANY = 3  # max jobs sent per company slug per run
 BROKEN_DESC_SIGNALS = [
     "internet explorer 11 is no longer supported",
     "please update to one of the following browsers",
@@ -151,6 +161,10 @@ def make_job_id(job):
 
 def strip_html(text):
     return re.sub(r"<[^>]+>", " ", text or "")
+
+def passes_title_whitelist(title):
+    t = title.lower()
+    return any(re.search(p, t) for p in REQUIRE_TITLE_TERMS)
 
 def quick_exclude(title):
     t = title.lower()
@@ -519,23 +533,43 @@ def main():
     print(f"Total coletado: {len(all_jobs)} vagas brutas.")
 
     sent_a = sent_b = 0
+    sent_per_company = {}  # track count per company slug
+
     for job in all_jobs:
         jid = make_job_id(job)
         if jid in seen:
             continue
         seen.add(jid)
 
+        # 1. Title whitelist — must match at least one CS/Ops term
+        if not passes_title_whitelist(job["title"]):
+            print(f"  Skipped (not CS/Ops title): {job['title']}")
+            continue
+
+        # 2. Title blacklist
         if quick_exclude(job["title"]):
             continue
+
+        # 3. Dead link filter
         if is_dead_link(job.get("url", "")):
             continue
+
+        # 4. Broken description filter
         if is_broken_description(job.get("description", "")):
             continue
 
+        # 5. Relevance pre-filter
         combined = (job["title"] + " " + job.get("description", "")).lower()
         if not any(kw in combined for kw in RELEVANCE_KEYWORDS):
             continue
 
+        # 6. Company cap — max 3 per company per run
+        company_key = job.get("company", "unknown").lower()
+        if sent_per_company.get(company_key, 0) >= MAX_PER_COMPANY:
+            print(f"  Skipped (company cap): {job['title']} @ {job.get('company','')}")
+            continue
+
+        # 7. Groq analysis
         time.sleep(2)
         analysis = analyze_with_groq(job)
         if not analysis:
@@ -545,13 +579,13 @@ def main():
         remote = analysis["remote_type"]
         print(f"  [{grade} | {remote}] {job['title']} @ {job.get('company','')}")
 
-        # Only A and B reach Telegram
         if remote in ("us_only", "hybrid_us"):
             continue
         if grade not in ("A", "B"):
             continue
 
         send_telegram(format_message(job, analysis))
+        sent_per_company[company_key] = sent_per_company.get(company_key, 0) + 1
         if grade == "A":
             sent_a += 1
         else:
