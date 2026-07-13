@@ -297,7 +297,7 @@ def fetch_jobspy(query):
     try:
         from jobspy import scrape_jobs
         df = scrape_jobs(
-            site_name=["indeed", "zip_recruiter", "google"],
+            site_name=["indeed", "google"],
             search_term=query,
             is_remote=True,
             hours_old=48,
@@ -307,12 +307,18 @@ def fetch_jobspy(query):
         )
         for _, row in df.iterrows():
             salary = ""
-            if row.get("min_amount") and row.get("max_amount"):
-                interval = row.get("interval", "yearly")
-                currency = row.get("currency", "USD")
-                salary = f"{currency} {int(row['min_amount']):,}–{int(row['max_amount']):,}/{interval}"
-            elif row.get("min_amount"):
-                salary = f"{row.get('currency','USD')} {int(row['min_amount']):,}/{row.get('interval','yearly')}"
+            try:
+                import math
+                min_a = row.get("min_amount")
+                max_a = row.get("max_amount")
+                interval = row.get("interval", "yearly") or "yearly"
+                currency = row.get("currency", "USD") or "USD"
+                if min_a and max_a and not (isinstance(min_a, float) and math.isnan(min_a)) and not (isinstance(max_a, float) and math.isnan(max_a)):
+                    salary = f"{currency} {int(min_a):,}–{int(max_a):,}/{interval}"
+                elif min_a and not (isinstance(min_a, float) and math.isnan(min_a)):
+                    salary = f"{currency} {int(min_a):,}/{interval}"
+            except Exception:
+                salary = ""
 
             site = str(row.get("site", "unknown")).title()
             jobs.append({
@@ -362,8 +368,14 @@ def fetch_rss(url, name):
         try:
             root = ET.fromstring(content)
         except ET.ParseError:
+            # Try removing control characters
             clean = re.sub(rb'[\x00-\x08\x0b\x0c\x0e-\x1f]', b'', content)
-            root = ET.fromstring(clean)
+            try:
+                root = ET.fromstring(clean)
+            except ET.ParseError:
+                # Last resort: strip anything non-ASCII and retry
+                clean2 = re.sub(rb'[^\x09\x0a\x0d\x20-\x7e]', b'', content)
+                root = ET.fromstring(clean2)
         for item in root.findall(".//item"):
             title_raw = item.findtext("title") or ""
             company   = title_raw.split(" at ")[-1].strip() if " at " in title_raw else ""
