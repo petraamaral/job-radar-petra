@@ -4,13 +4,20 @@ A self-hosted job search bot that runs daily, scores listings A–F, and deliver
 
 Built to solve a real problem: manually checking six job boards every morning is wasted time when a script can do it better.
 
+## Two modes
+
+**Simple mode** (this repo) — runs via GitHub Actions cron, sends Grade A and B listings to Telegram. Zero infrastructure beyond GitHub. No interactivity.
+
+**Interactive mode** (coming soon) — persistent process on Render with Telegram webhook. Adds "Save to OakJobs" buttons that insert listings directly into your application pipeline. Requires Render + Supabase.
+
 ## What it does
 
-- Scans **Greenhouse ATS directly** (company career pages, no aggregator noise)
-- Reads **RSS feeds** from We Work Remotely and Remotive
-- Falls back to **Google Jobs via SerpAPI** for broader coverage
-- Filters dead links, stale aggregator spam, and irrelevant titles before touching the LLM
-- Scores each listing across **5 dimensions** using Groq (llama-3.1-8b-instant):
+- Scrapes **Indeed, ZipRecruiter, and Google Jobs** concurrently via [JobSpy](https://github.com/speedyapply/JobSpy)
+- Scans **Lever ATS directly** for companies you care about (no aggregator noise)
+- Reads **RSS feeds** from We Work Remotely and Remotive as reliable fallback
+- Filters dead links, broken descriptions, and irrelevant titles before touching the LLM
+- Classifies each listing by `role_type` using Groq — `sales` and `technical` roles are discarded before scoring
+- Scores remaining listings across **5 dimensions** using Groq (llama-3.1-8b-instant):
   - Remote fit (30%) — no location restriction, no US auth required
   - Title match (25%) — role aligns with target profile
   - Tool overlap (25%) — required tools match candidate skills
@@ -18,11 +25,12 @@ Built to solve a real problem: manually checking six job boards every morning is
   - Timezone (10%) — Americas or EMEA
 - Converts the weighted score to a **letter grade (A–F)**
 - Sends only **Grade A and B** listings to Telegram
+- Caps at **3 listings per company** per run to avoid flooding
 - Runs daily via **GitHub Actions** — zero infrastructure needed
 
 ## Why this instead of job boards
 
-Job boards surface the same listings across dozens of aggregators, mixed with dead links, ghost jobs, and postings from companies that stopped hiring months ago. This bot goes to the source (ATS APIs and verified RSS feeds) and filters aggressively before scoring, so what reaches you is actually worth reading.
+Job boards surface the same listings across dozens of aggregators, mixed with dead links, ghost jobs, and postings from companies that stopped hiring months ago. This bot goes to the source and filters aggressively before scoring, so what reaches you is actually worth reading.
 
 ## Setup
 
@@ -36,7 +44,7 @@ git clone https://github.com/yourusername/job-radar
 
 Edit `scraper.py` — find `CANDIDATE_PROFILE` near the top and replace with your own background, target roles, salary range, and work authorization.
 
-Also update `GREENHOUSE_COMPANIES` with companies you want to track directly.
+Also update `LEVER_COMPANIES` with companies you want to track directly and `JOBSPY_QUERIES` with your target role titles.
 
 ### 3. Add GitHub Secrets
 
@@ -47,7 +55,8 @@ Settings → Secrets and variables → Actions → New repository secret:
 | `TELEGRAM_TOKEN` | Bot token from @BotFather |
 | `TELEGRAM_CHAT_ID` | Your numeric chat ID |
 | `GROQ_API_KEY` | Free at console.groq.com |
-| `SERPAPI_KEY` | Optional — free tier at serpapi.com (100 searches/month) |
+
+SerpAPI is no longer required. JobSpy scrapes directly.
 
 ### 4. Run manually to test
 
@@ -60,13 +69,13 @@ Runs automatically every day at 09:00 BRT (12:00 UTC).
 ```
 🟢 Grade A · Customer Operations Specialist
 ──────────────────────
-🏢 Acme Corp  |  📡 Greenhouse · acmecorp
+🏢 Acme Corp  |  📡 JobSpy · Indeed
 ──────────────────────
-📌 Own the post-sale customer lifecycle, drive adoption and retention across a portfolio of 200+ SMB accounts.
-🛠 Zendesk, HubSpot, SQL, Metabase
+📌 Own the post-sale customer lifecycle, drive adoption and retention across a portfolio of SMB accounts.
+🛠 Zendesk, HubSpot, SQL
 🕐 Americas timezone
 ──────────────────────
-💰 $3,000–$4,000/month
+💰 USD 3,000–4,000/yearly
 🔗 Ver vaga
 ──────────────────────
 📊 Remote 100 · Title 90 · Tools 85 · Level 80 · TZ 100
@@ -76,21 +85,26 @@ Runs automatically every day at 09:00 BRT (12:00 UTC).
 
 | Variable | What it controls |
 |----------|-----------------|
-| `SERPAPI_QUERIES` | Search queries sent to Google Jobs |
-| `GREENHOUSE_COMPANIES` | Company slugs to scan via Greenhouse API |
+| `JOBSPY_QUERIES` | Search queries sent to Indeed/ZipRecruiter/Google |
+| `LEVER_COMPANIES` | Company slugs to scan via Lever API |
 | `RSS_SOURCES` | RSS feeds to monitor |
 | `EXCLUDE_TITLE_QUICK` | Regex patterns to skip by title |
-| `DEAD_LINK_DOMAINS` | Aggregator domains to block |
-| Grade filter in `main()` | Change `("A", "B")` to include C if you want more volume |
+| `REQUIRE_TITLE_TERMS` | Whitelist — title must match at least one term |
+| `DEAD_LINK_DOMAINS` | Domains to block |
+| `MAX_PER_COMPANY` | Max listings per company per run (default: 3) |
+| Grade filter in `main()` | Change `("A", "B")` to include C for more volume |
 
 ## Tech stack
 
-- Python 3.11
-- Groq API (llama-3.1-8b-instant) — free tier
-- SerpAPI Google Jobs — optional, free tier (100 req/month)
-- Greenhouse public API — no key needed
-- GitHub Actions — free for public repos
-- Telegram Bot API — free
+- **[JobSpy](https://github.com/speedyapply/JobSpy)** (MIT) — job scraping from Indeed, ZipRecruiter, Google Jobs, LinkedIn
+- **Groq API** (llama-3.1-8b-instant) — role classification and scoring, free tier
+- **Lever public API** — direct ATS feed, no key needed
+- **GitHub Actions** — free for public repos
+- **Telegram Bot API** — free
+
+## Credits
+
+Job scraping powered by [JobSpy](https://github.com/speedyapply/JobSpy) by speedyapply (MIT License). This project would not be possible without their work on reverse-engineering job board APIs.
 
 ## Part of OakJobs
 
